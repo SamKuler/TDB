@@ -24,6 +24,13 @@
 #include "include/query_engine/planner/operator/explain_physical_operator.h"
 #include "include/query_engine/planner/node/join_logical_node.h"
 #include "include/query_engine/planner/operator/group_by_physical_operator.h"
+
+#include "include/query_engine/planner/operator/index_scan_physical_operator.h"
+
+#include "include/query_engine/structor/expression/comparison_expression.h"
+#include "include/query_engine/structor/expression/field_expression.h"
+#include "include/query_engine/structor/expression/value_expression.h"
+
 #include "common/log/log.h"
 #include "include/storage_engine/recorder/table.h"
 
@@ -87,19 +94,102 @@ RC PhysicalOperatorGenerator::create_plan(
 {
   vector<unique_ptr<Expression>> &predicates = table_get_oper.predicates();
   Index *index = nullptr;
+  Table *table = table_get_oper.table();
+
+  std::map<std::string, std::pair<const FieldExpr*, const ValueExpr*>> field_value_map;
+
   // TODO [Lab2] 生成IndexScanOperator的准备工作,主要包含:
   // 1. 通过predicates获取具体的值表达式， 目前应该只支持等值表达式的索引查找
     // example:
     //  if(predicate.type == ExprType::COMPARE){
     //   auto compare_expr = dynamic_cast<ComparisonExpr*>(predicate.get());
-    //   if(compare_expr->comp != EQUAL_TO) continue;
+    //   if(compare_expr->comp() != EQUAL_TO) continue;
     //   [process]
     //  }
   // 2. 对应上面example里的process阶段， 找到等值表达式中对应的FieldExpression和ValueExpression(左值和右值)
   // 通过FieldExpression找到对应的Index, 通过ValueExpression找到对应的Value
+  std::vector<Value> values;
+  for (auto &predicate : predicates){
+    if (predicate->type() == ExprType::COMPARISON){
+      auto compare_expr = dynamic_cast<ComparisonExpr*>(predicate.get());
+      if (compare_expr->comp() == EQUAL_TO)
+      {
+        Expression *left = compare_expr->left().get();
+        Expression *right = compare_expr->right().get();
+
+        FieldExpr *field_expr = nullptr;
+        ValueExpr *value_expr = nullptr;
+
+        // 找到等值表达式中对应的FieldExpression和ValueExpression
+        if(left->type()==ExprType::FIELD&&right->type()==ExprType::VALUE)
+        {
+          field_expr = dynamic_cast<FieldExpr*>(left);
+          value_expr = dynamic_cast<ValueExpr*>(right);
+        }
+        else if(right->type()==ExprType::FIELD&&left->type()==ExprType::VALUE)
+        {// 不确定左右值
+          field_expr = dynamic_cast<FieldExpr*>(right);
+          value_expr = dynamic_cast<ValueExpr*>(left);
+        }
+
+        //通过FieldExpression找到对应的Index, 通过ValueExpression找到对应的Value
+        if(field_expr!=nullptr&&value_expr!=nullptr)
+        {
+          field_value_map[field_expr->field_name()] = std::make_pair(field_expr, value_expr);
+        }
+      }
+    }
+  }
+
+  // 最查询table的所有索引，找到最符合的索引
+  const TableMeta &table_meta = table->table_meta();
+  const int index_count = table_meta.index_num();
+  IndexMeta *best_fit_index_meta = nullptr;
+  for (int i = 0; i < index_count; i++) {
+    const IndexMeta *index_meta = table_meta.index(i);
+    bool accept = true;
+    int filed_count = index_meta->field_amount();
+    for (int j = 0; j < filed_count; j++) {
+      const char *field_name = index_meta->field(j);
+      auto it = field_value_map.find(field_name);
+      if (it == field_value_map.end()) {
+        accept=false;
+      }
+    }
+    if(accept==false)
+    {
+      continue;
+    }
+    // 最优选择
+    if (best_fit_index_meta == nullptr ||
+        best_fit_index_meta->field_amount() < index_meta->field_amount()) {
+      best_fit_index_meta = const_cast<IndexMeta *>(index_meta);
+    }
+  }
+  // 构建查询的值
+  if (best_fit_index_meta != nullptr) {
+    index = table->find_index(best_fit_index_meta->name());
+    ASSERT(index != nullptr, "failed to find index %s", best_fit_index_meta->name());
+
+    //构建要查询的值，由于是多字段，所以需要重新创建一个Value对象
+    for (int i=0;i<best_fit_index_meta->field_amount();i++){
+      const char *field_name = best_fit_index_meta->field(i);
+      auto &value = field_value_map[field_name].second->get_value();
+      values.emplace_back(value);
+    }
+  }
+  // if(best_fit_index_meta!=nullptr){
+  //   if(best_fit_index_meta->field_amount()>1)
+  //   {
+  //     value.set_type(AttrType::CHARS);
+  //   }
+  //   else
+  //   {
+  //     value.set_type(table->table_meta().field(best_fit_index_meta->field(0))->type());
+  //   }
+  // }
 
   if(index == nullptr){
-    Table *table = table_get_oper.table();
     auto table_scan_oper = new TableScanPhysicalOperator(table, table_get_oper.table_alias(), table_get_oper.readonly());
     table_scan_oper->isdelete_ = is_delete;
     table_scan_oper->set_predicates(std::move(predicates));
@@ -112,6 +202,12 @@ RC PhysicalOperatorGenerator::create_plan(
     // IndexScanPhysicalOperator *operator =
     //              new IndexScanPhysicalOperator(table, index, readonly, &value, true, &value, true);
     // oper = unique_ptr<PhysicalOperator>(operator);
+    auto index_scan_oper = new IndexScanPhysicalOperator(table, index, table_get_oper.readonly(),&values, true, &values, true);
+    index_scan_oper->isdelete_ = is_delete;
+    index_scan_oper->set_table_alias(table_get_oper.table_alias());
+    index_scan_oper->set_predicates(predicates);
+    oper = unique_ptr<PhysicalOperator>(index_scan_oper);
+    LOG_TRACE("use index scan on table %s",table->name());
   }
 
   return RC::SUCCESS;

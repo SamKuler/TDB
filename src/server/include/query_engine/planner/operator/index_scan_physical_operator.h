@@ -15,19 +15,38 @@ class IndexScanPhysicalOperator : public PhysicalOperator
 {
 public:
   IndexScanPhysicalOperator(Table *table, Index *index, bool readonly,
-                           const Value *left_value, bool left_inclusive,
-                           const Value *right_value, bool right_inclusive) :
-                                             table_(table), index_(index),
-                                             readonly_(readonly),
-                                             left_inclusive_(left_inclusive),
-                                             right_inclusive_(right_inclusive)
- {
+                            const std::vector<Value> *left_values, bool left_inclusive,
+                            const std::vector<Value> *right_values, bool right_inclusive) :
+                            table_(table), index_(index),
+                            readonly_(readonly),
+                            left_inclusive_(left_inclusive),
+                            right_inclusive_(right_inclusive)
+  {
+    if (left_values != nullptr) {
+      left_values_ = *left_values;
+      left_null_ = false;
+    }
+    if (right_values != nullptr) {
+      right_values_ = *right_values;
+      right_null_ = false;
+    }
+  }
+
+  // Backward compatibility constructor
+  IndexScanPhysicalOperator(Table *table, Index *index, bool readonly,
+                            const Value *left_value, bool left_inclusive,
+                            const Value *right_value, bool right_inclusive) :
+                            table_(table), index_(index),
+                            readonly_(readonly),
+                            left_inclusive_(left_inclusive),
+                            right_inclusive_(right_inclusive)
+  {
     if (left_value != nullptr) {
-      left_value_ = *left_value;
+      left_values_.push_back(*left_value);
       left_null_ = false;
     }
     if (right_value != nullptr) {
-      right_value_ = *right_value;
+      right_values_.push_back(*right_value);
       right_null_ = false;
     }
   }
@@ -68,8 +87,8 @@ public:
   Record current_record_;
   RowTuple tuple_;
 
-  Value left_value_;
-  Value right_value_;
+  std::vector<Value> left_values_;
+  std::vector<Value> right_values_;
   bool left_inclusive_ = false;
   bool right_inclusive_ = false;
   bool left_null_ = true;

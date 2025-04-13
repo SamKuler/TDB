@@ -91,7 +91,32 @@ RC BplusTreeIndex::close()
 RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
 {
   // TODO [Lab2] 增加索引项的处理逻辑
-  return RC::SUCCESS;
+  
+  RC rc = RC::SUCCESS;
+
+  if (record == nullptr || rid == nullptr) {
+    LOG_WARN("Failed to insert index entry due to invalid arguments");
+    return RC::INVALID_ARGUMENT;
+  }
+
+  // 从record中取出multi_field_metas_中的字段值，作为key。
+  const char *field_values[index_meta_.field_amount()];
+  for (int i = 0; i < index_meta_.field_amount(); i++) {
+      field_values[i] = record + multi_field_metas_[i].offset();
+  }
+
+  // 调用BplusTreeHandler的insert_entry完成插入操作
+  rc = index_handler_.insert_entry(field_values, rid, index_meta_.field_amount());
+  if (rc != RC::SUCCESS) {
+      //判断是否存在重复的字段值
+      if (rc == RC::RECORD_DUPLICATE_KEY) {
+          LOG_WARN("Failed to insert index entry due to duplicate key. rc:%s", strrc(rc));
+      } else {
+          LOG_WARN("Failed to insert index entry. rc=%s", strrc(rc));
+      }
+  }
+
+  return rc;
 }
 
 /**
@@ -101,7 +126,26 @@ RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
 RC BplusTreeIndex::delete_entry(const char *record, const RID *rid)
 {
   // TODO [Lab2] 增加索引项的处理逻辑
-  return RC::SUCCESS;
+  RC rc = RC::SUCCESS;
+
+  if (record == nullptr || rid == nullptr) {
+    LOG_WARN("Failed to insert index entry due to invalid arguments");
+    return RC::INVALID_ARGUMENT;
+  }
+
+  // 从record中取出multi_field_metas_中的字段值，作为key。
+  const char *field_values[index_meta_.field_amount()];
+  for (int i = 0; i < index_meta_.field_amount(); i++) {
+      field_values[i] = record + multi_field_metas_[i].offset();
+  }
+
+  // 调用BplusTreeHandler的insert_entry完成插入操作
+  rc = index_handler_.delete_entry(field_values, rid, index_meta_.field_amount());
+  if (rc != RC::SUCCESS) {
+      LOG_WARN("Failed to delete index entry. rc:%s", strrc(rc));
+  }
+
+  return rc;
 }
 
 IndexScanner *BplusTreeIndex::create_scanner(

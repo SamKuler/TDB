@@ -12,13 +12,25 @@ RC IndexScanPhysicalOperator::open(Trx *trx)
     return RC::INTERNAL;
   }
 
-  const char *left_key = left_null_ ? nullptr : left_value_.data();
-  const char *right_key = right_null_ ? nullptr : right_value_.data();
-  IndexScanner *index_scanner = index_->create_scanner(left_key, 
-                                                       left_value_.length(), 
+  std::string left_key;
+  std::string right_key;
+  if(!left_null_)
+  {
+    for (const auto &value : left_values_) {
+      left_key.append(value.data(), value.length());
+    }
+  }
+  if(!right_null_)
+  {
+    for (const auto &value : right_values_) {
+      right_key.append(value.data(), value.length());
+    }
+  }
+  IndexScanner *index_scanner = index_->create_scanner(left_key.c_str(),
+                                                       left_key.length(), 
                                                        left_inclusive_,
-                                                       right_key, 
-                                                       right_value_.length(), 
+                                                       right_key.c_str(),
+                                                       right_key.length(),
                                                        right_inclusive_);
   if(index_scanner == nullptr)
   {
@@ -54,6 +66,36 @@ RC IndexScanPhysicalOperator::next()
   // 从current_tuple()的实现中不难看出, 数据会通过current_record_传递到Tuple中并返回,
   // 因此该next()方法的主要目的就是将recordHandler获取到的数据填充到current_record_中
   // while(){}
+
+  while(true)
+  {
+    RC rc = index_scanner_->next_entry(&rid,isdelete_);
+    if (rc!=RC::SUCCESS)
+    {
+      return rc;
+    }
+
+    rc = record_handler_->get_record(record_page_handler_,&rid,readonly_,&current_record_);
+    if(rc != RC::SUCCESS)
+    {
+      LOG_WARN("Failed to get record for rid: %s, rc=%s", rid.to_string().c_str(), strrc(rc));
+      return rc;
+    }
+
+    tuple_._set_record(&current_record_);
+    bool filter_result = false;
+    rc = filter(tuple_, filter_result);
+    if(rc != RC::SUCCESS)
+    {
+      LOG_WARN("Failed to filter record, rc=%s", strrc(rc));
+      return rc;
+    }
+
+    if(filter_result)
+    {
+      return RC::SUCCESS;
+    }
+  }
 
   return RC::SUCCESS;
 }
