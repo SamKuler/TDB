@@ -20,7 +20,16 @@ public:
   RC close() override;
   Tuple *current_tuple() override;
 
+  void set_condition(std::unique_ptr<Expression> &&condition)
+  {
+    condition_ = std::move(condition);
+  }
+
 private:
   Trx *trx_ = nullptr;
-  JoinedTuple joined_tuple_;  //! 当前关联的左右两个tuple
+  JoinedTuple joined_tuple_;  // 当前关联的左右两个tuple
+  std::unique_ptr<Expression> condition_;  // 连接条件
+  
+  bool started_ = false;  // 是否开始执行
+  bool left_ready_ = false;  // 左表是否已经遍历完
 };

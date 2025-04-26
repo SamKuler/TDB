@@ -23,9 +23,12 @@
 #include "include/query_engine/planner/node/explain_logical_node.h"
 #include "include/query_engine/planner/operator/explain_physical_operator.h"
 #include "include/query_engine/planner/node/join_logical_node.h"
+#include "include/query_engine/planner/operator/join_physical_operator.h"
+#include "include/query_engine/planner/node/group_by_logical_node.h"
 #include "include/query_engine/planner/operator/group_by_physical_operator.h"
 
 #include "include/query_engine/planner/operator/index_scan_physical_operator.h"
+
 
 #include "include/query_engine/structor/expression/comparison_expression.h"
 #include "include/query_engine/structor/expression/field_expression.h"
@@ -75,7 +78,9 @@ RC PhysicalOperatorGenerator::create(LogicalNode &logical_operator, unique_ptr<P
       return create_plan(static_cast<ExplainLogicalNode &>(logical_operator), oper, is_delete);
     }
     // TODO [Lab3] 实现JoinNode到JoinOperator的转换
-    case LogicalNodeType::JOIN:
+    case LogicalNodeType::JOIN: {
+      return create_plan(static_cast<JoinLogicalNode &>(logical_operator), oper);
+    }
     case LogicalNodeType::GROUP_BY: {
       return RC::UNIMPLENMENT;
     }
@@ -205,7 +210,7 @@ RC PhysicalOperatorGenerator::create_plan(
     auto index_scan_oper = new IndexScanPhysicalOperator(table, index, table_get_oper.readonly(),&values, true, &values, true);
     index_scan_oper->isdelete_ = is_delete;
     index_scan_oper->set_table_alias(table_get_oper.table_alias());
-    index_scan_oper->set_predicates(predicates);
+    index_scan_oper->set_predicates(std::move(predicates));
     oper = unique_ptr<PhysicalOperator>(index_scan_oper);
     LOG_TRACE("use index scan on table %s",table->name());
   }
@@ -418,5 +423,31 @@ RC PhysicalOperatorGenerator::create_plan(
 RC PhysicalOperatorGenerator::create_plan(
     JoinLogicalNode &join_oper, unique_ptr<PhysicalOperator> &oper)
 {
-  return RC::UNIMPLENMENT;
+  // 孩子节点
+  vector<unique_ptr<LogicalNode>> &child_opers = join_oper.children();
+  ASSERT(child_opers.size() == 2, "join logical operator's sub oper number should be 2");
+  // 左子节点
+  unique_ptr<PhysicalOperator> left_oper;
+  RC rc = create(*child_opers[0], left_oper);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to create left child operator of join operator. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  unique_ptr<PhysicalOperator> right_oper;
+  rc = create(*child_opers[1], right_oper);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to create right child operator of join operator. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  auto *join_operator = new JoinPhysicalOperator();
+
+  join_operator->set_condition(std::move(join_oper.condition()));
+  join_operator->add_child(std::move(left_oper));
+  join_operator->add_child(std::move(right_oper));
+  
+  oper = unique_ptr<PhysicalOperator>(join_operator);
+
+  return RC::SUCCESS;
 }

@@ -102,17 +102,37 @@ RC LogicalPlanGenerator::plan_node(
   // 1. Table scan node
   //TODO [Lab3] 当前只取一个表作为查询表,当引入Join后需要考虑同时查询多个表的情况
   //参考思路: 遍历tables中的所有Table，针对每个table生成TableGetLogicalNode
-   Table *default_table = tables[0];
-   const char *table_name = default_table->name();
-   std::vector<Field> fields;
-   for (auto *field : all_fields) {
-     if (0 == strcmp(field->table_name(), default_table->name())) {
-       fields.push_back(*field);
-     }
-   }
+  //  Table *default_table = tables[0];
+  //  const char *table_name = default_table->name();
+  //  std::vector<Field> fields;
+  //  for (auto *field : all_fields) {
+  //    if (0 == strcmp(field->table_name(), default_table->name())) {
+  //      fields.push_back(*field);
+  //    }
+  //  }
 
-   root = std::unique_ptr<LogicalNode>(
-       new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+  //  root = std::unique_ptr<LogicalNode>(
+  //      new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+
+  std::vector<std::unique_ptr<LogicalNode>> table_get_nodes;
+  for (int i = 0; i < tables.size(); i++) {
+    Table *table = tables[i];
+    const char *table_name = table->name();
+    const char *table_alias = nullptr;
+    if (i < select_stmt->table_alias().size()) {
+      table_alias = select_stmt->table_alias()[i].c_str();
+    }
+    std::vector<Field> fields;
+    for (auto *field : all_fields) {
+      if (0 == strcmp(field->table_name(), table_name)||
+          (table_alias && 0 == strcmp(field->table_name(), table_alias))) {
+        fields.push_back(*field);
+      }
+    }
+    auto table_get_node = std::unique_ptr<LogicalNode>(
+        new TableGetLogicalNode(table, table_alias, fields, true/*readonly*/));
+    table_get_nodes.push_back(std::move(table_get_node));
+  }
 
   // 2. inner join node
   // TODO [Lab3] 完善Join节点的逻辑计划生成, 需要解析并设置Join涉及的表,以及Join使用到的连接条件
@@ -122,6 +142,26 @@ RC LogicalPlanGenerator::plan_node(
   // * 遍历TableGetLogicalNode
   // * 生成JoinLogicalNode, 通过select_stmt中的join_filter_stmts
   // ps: 需要考虑table数大于2的情况
+  if (table_get_nodes.size() == 1) {
+    root = std::move(table_get_nodes[0]);
+  } else {
+    std::vector<FilterStmt *> join_filter_stmts = select_stmt->join_filter_stmts();
+
+    root = std::move(table_get_nodes[0]);
+
+    for (size_t i = 1; i < table_get_nodes.size(); i++) {
+      auto join_node = std::unique_ptr<JoinLogicalNode>(new JoinLogicalNode());
+      if (i-1 < join_filter_stmts.size()&&join_filter_stmts[i-1] != nullptr) {
+        auto join_condition = _transfer_filter_stmt_to_expr(join_filter_stmts[i-1]);
+        if (join_condition != nullptr) {
+          join_node->set_condition(std::move(join_condition));
+        }
+      }
+      join_node->add_child(std::move(root));
+      join_node->add_child(std::move(table_get_nodes[i]));
+      root = std::move(join_node);
+    }
+  }
 
 
   // 3. Table filter node
