@@ -425,25 +425,37 @@ RC PhysicalOperatorGenerator::create_plan(
 {
   // 孩子节点
   vector<unique_ptr<LogicalNode>> &child_opers = join_oper.children();
-  ASSERT(child_opers.size() == 2, "join logical operator's sub oper number should be 2");
+  ASSERT(child_opers.size() == 2, "Join logical operator's sub oper number should be 2");
   // 左子节点
   unique_ptr<PhysicalOperator> left_oper;
   RC rc = create(*child_opers[0], left_oper);
   if (rc != RC::SUCCESS) {
-    LOG_WARN("failed to create left child operator of join operator. rc=%s", strrc(rc));
+    LOG_WARN("Failed to create left child operator of join operator. rc=%s", strrc(rc));
     return rc;
   }
 
   unique_ptr<PhysicalOperator> right_oper;
   rc = create(*child_opers[1], right_oper);
   if (rc != RC::SUCCESS) {
-    LOG_WARN("failed to create right child operator of join operator. rc=%s", strrc(rc));
+    LOG_WARN("Failed to create right child operator of join operator. rc=%s", strrc(rc));
     return rc;
   }
 
   auto *join_operator = new JoinPhysicalOperator();
 
   join_operator->set_condition(std::move(join_oper.condition()));
+
+  // 等值连接时启用哈希连接
+  if (join_oper.condition() != nullptr) {
+    if (join_oper.condition()->type() == ExprType::COMPARISON) {
+      auto *comp_expr = dynamic_cast<ComparisonExpr*>(join_oper.condition().get());
+      if (comp_expr != nullptr && comp_expr->comp() == EQUAL_TO) {
+        join_operator->enable_hash_join();
+        LOG_TRACE("Hash join enabled for equi-join operation");
+      }
+    }
+  }
+
   join_operator->add_child(std::move(left_oper));
   join_operator->add_child(std::move(right_oper));
   
