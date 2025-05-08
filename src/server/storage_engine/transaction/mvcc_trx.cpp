@@ -116,6 +116,25 @@ RC MvccTrx::insert_record(Table *table, Record &record)
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现记录的插入，相关提示见文档
 
+  rc = start_if_need();
+  if (rc!= RC::SUCCESS) {
+    LOG_WARN("failed to start trx. rc=%s", strrc(rc));
+    return rc;
+  }
+  
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+ 
+  begin_xid_field.set_int(record, -trx_id_);// Uncommitted trx id
+  end_xid_field.set_int(record, trx_kit_.max_trx_id()); // Uncommitted, Infinity
+ 
+  rc = table->insert_record(record);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to insert record into table. rc=%s", strrc(rc));
+    return rc;
+  }
+
+
   pair<OperationSet::iterator, bool> ret = operations_.insert(Operation(Operation::Type::INSERT, table, record.rid()));
   if (!ret.second) {
     rc = RC::INTERNAL;
@@ -128,6 +147,31 @@ RC MvccTrx::delete_record(Table *table, Record &record)
 {
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现逻辑上的删除，相关提示见文档
+
+  rc = start_if_need();
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to start trx. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  // Check visibility
+  rc = visit_record(table, record, false);
+  if (rc != RC::SUCCESS) {// Locked or Invisible
+    return rc;
+  }
+
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+
+  auto record_updater = [this, &end_xid_field](Record &record) {
+    end_xid_field.set_int(record,-this->trx_id_);
+  };
+  rc = table->visit_record(record.rid(), false/*readonly*/, record_updater);// Mark as deleted
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to visit record while deleting. rid=%s, rc=%s", record.rid().to_string().c_str(), strrc(rc));
+    return rc;
+  }
+
 
   operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
   return rc;
@@ -147,7 +191,60 @@ RC MvccTrx::visit_record(Table *table, Record &record, bool readonly)
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现记录是否可见的判断，相关提示见文档
 
-  return rc;
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+
+  int begin_xid = begin_xid_field.get_int(record);
+  int end_xid = end_xid_field.get_int(record);
+  
+  if (begin_xid<0)// Inserted and uncommited
+  {
+    int operation_xid = -begin_xid;
+    if(operation_xid != trx_id_)// Access by other trx
+    {
+      if (readonly) {
+        return RC::RECORD_INVISIBLE;
+      } else {
+        return RC::LOCKED_CONCURRENCY_CONFLICT;
+      }
+    }
+  }
+
+  if(end_xid < trx_kit_.max_trx_id())// Marked as deleted
+  {
+    if (end_xid<0)//Uncommited
+    {
+      int operation_xid = -end_xid;
+      if(operation_xid != trx_id_)// Access by other trx
+      {
+        if (readonly) {
+          return RC::SUCCESS;
+        } else {
+          return RC::LOCKED_CONCURRENCY_CONFLICT;
+        }
+      }
+      else// Seen as deleted
+      {
+        return RC::RECORD_INVISIBLE;
+      }
+    }
+    else// Committed
+    {
+      if (end_xid <= trx_id_) {// Committed before current trx
+        return RC::RECORD_INVISIBLE;
+      } else {
+        return RC::SUCCESS;//Commited after current trx
+      }
+    }
+  }
+
+  //Timeline check
+  if (begin_xid>0 && begin_xid>trx_id_)// Inserted in future
+  {
+    return RC::RECORD_INVISIBLE;
+  }
+
+  return RC::SUCCESS;
 }
 
 RC MvccTrx::start_if_need()
